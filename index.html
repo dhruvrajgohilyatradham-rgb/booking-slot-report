@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Booking Slot Report</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mu:#667085;--bd:#e2e5ea;--ac:#c2410c}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--card:#1d2026;--tx:#eceef1;--mu:#9aa3b0;--bd:#2d323b;--ac:#fb923c}}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px system-ui,Segoe UI,Arial,sans-serif;padding:24px}
+.w{max-width:960px;margin:auto}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--mu);margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}
+.safe{border-left:4px solid #16a34a}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:28px;text-align:center;cursor:pointer;color:var(--mu)}
+#drop.on{border-color:var(--ac)}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-size:14px;cursor:pointer;margin-right:8px}
+button.s{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left}
+th{background:rgba(127,127,127,.12)}
+td.n,th.n{text-align:right}
+tr.t td{font-weight:700;background:rgba(127,127,127,.08)}
+#msg{color:var(--mu);margin:8px 0}
+.err{color:#dc2626}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="w">
+<h1>Booking Slot Report</h1>
+<div class="sub">Upload bookings CSV → get time-slot report → click to copy</div>
+
+<div class="card safe">🔒 <b>100% safe:</b> file is read only inside your browser. This page is blocked from making any network request, nothing is uploaded or saved. Close the tab and all data is gone.</div>
+
+<div class="card">
+<div id="drop">Click here or drop your .csv file<input id="f" type="file" accept=".csv,.tsv,.txt" class="hide"></div>
+<div id="msg"></div>
+</div>
+
+<div id="out" class="hide">
+<div class="card">
+<div class="scroll"><table id="t1"></table></div>
+<p style="margin:12px 0 0"><button onclick="cp('t1',this)">Copy report</button><button class="s" onclick="cp('t1',this,1)">Copy as plain text</button></p>
+</div>
+<div class="card">
+<b>Hour-wise count</b>
+<div class="scroll"><table id="t2"></table></div>
+<p style="margin:12px 0 0"><button onclick="cp('t2',this)">Copy hour-wise</button></p>
+</div>
+</div>
+</div>
+
+<script>
+const STATUS=["Processing","Payment Received","Enquiry Sent","Complete_All","Complete With SMS","Complete With Email","Complete Cancel","Complete","Cancelled due to Booking not available"];
+const nz=s=>String(s||"").toLowerCase().replace(/_/g," ").replace(/\s+/g," ").trim();
+const OK=new Set(STATUS.map(nz));
+const SLOTS=[
+ {s:"12 AM to 8 AM",n:"Midnight to Morning",a:0,b:8},
+ {s:"8 AM to 2 PM",n:"Morning to Afternoon",a:8,b:14},
+ {s:"2 PM to 6 PM",n:"Afternoon to Evening",a:14,b:18},
+ {s:"6 PM to 12 AM",n:"Evening to Midnight",a:18,b:24}];
+const hl=h=>h==0?"12 AM":h<12?h+" AM":h==12?"12 PM":(h-12)+" PM";
+const inr=(v,d=2)=>v.toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+const $=id=>document.getElementById(id);
+
+function parse(txt){
+ txt=txt.replace(/^\uFEFF/,"");
+ const l=txt.split(/\r?\n/)[0]||"";
+ const d=[["\t",l.split("\t").length],[",",l.split(",").length],[";",l.split(";").length]].sort((a,b)=>b[1]-a[1])[0][0];
+ const rows=[];let r=[],c="",q=false;
+ for(let i=0;i<txt.length;i++){
+  const ch=txt[i];
+  if(q){ if(ch=='"'){ if(txt[i+1]=='"'){c+='"';i++} else q=false } else c+=ch }
+  else if(ch=='"') q=true;
+  else if(ch==d){r.push(c);c=""}
+  else if(ch=="\n"||ch=="\r"){ if(ch=="\r"&&txt[i+1]=="\n")i++; r.push(c);c="";rows.push(r);r=[] }
+  else c+=ch;
+ }
+ if(c!==""||r.length){r.push(c);rows.push(r)}
+ return rows.filter(x=>x.some(v=>v.trim()!==""));
+}
+function hourOf(s){
+ const m=String(s).match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp])?\.?[Mm]?/);
+ if(!m)return null;
+ let h=+m[1];const ap=m[3]&&m[3].toLowerCase();
+ if(ap=="p"&&h<12)h+=12; if(ap=="a"&&h==12)h=0;
+ return h>=0&&h<24?h:null;
+}
+function num(v){const x=parseFloat(String(v||"").replace(/[^0-9.\-]/g,""));return isNaN(x)?0:x}
+
+function run(text){
+ const msg=$("msg");msg.className="";
+ const rows=parse(text);
+ if(rows.length<2){msg.className="err";msg.textContent="File looks empty.";return}
+ const H=rows[0].map(nz);
+ const iID=H.indexOf("booking id"),iS=H.indexOf("status"),iB=H.indexOf("booked on"),iT=H.indexOf("total");
+ const miss=[["Booking ID",iID],["Status",iS],["Booked On",iB]].filter(x=>x[1]<0).map(x=>x[0]);
+ if(miss.length){msg.className="err";msg.textContent="Column not found: "+miss.join(", ");return}
+ const seen=new Set(),hours=Array(24).fill(0),amt=Array(24).fill(0);
+ let skipStatus=0,skipTime=0,dup=0;
+ for(let i=1;i<rows.length;i++){
+  const r=rows[i];
+  if(!OK.has(nz(r[iS]))){skipStatus++;continue}
+  const id=String(r[iID]||"").trim();
+  if(id&&seen.has(id)){dup++;continue}
+  if(id)seen.add(id);
+  const h=hourOf(r[iB]);
+  if(h===null){skipTime++;continue}
+  hours[h]++;amt[h]+=iT>=0?num(r[iT]):0;
+ }
+ const tot=hours.reduce((a,b)=>a+b,0);
+ const OR="#F8B26A",GR="#B6D7A8",W="#FFFFFF";
+ const st=(bg,bold)=>`style="border:1px solid #000;padding:8px 12px;text-align:center;color:#000;background:${bg};${bold?'font-weight:bold;':''}"`;
+ const heads=["Slot","Shifts","Booking","Total Hours","Per Hours Avg","Per hour Avg Amount","Share %"];
+ let h1="<tr>"+heads.map(x=>`<th ${st(OR,1)}>${x}</th>`).join("")+"</tr>";
+ let totAmt=0;
+ SLOTS.forEach(o=>{
+  let b=0,a=0;for(let h=o.a;h<o.b;h++){b+=hours[h];a+=amt[h]}
+  totAmt+=a;const hr=o.b-o.a;
+  h1+=`<tr><td ${st(OR,1)}>${o.s}</td><td ${st(W)}>${o.n}</td><td ${st(W)}>${b}</td><td ${st(W)}>${hr}</td><td ${st(GR,1)}>${inr(b/hr)}</td><td ${st(W)}>${inr(a/hr)}</td><td ${st(W)}>${inr(tot?b*100/tot:0)}%</td></tr>`;
+ });
+ h1+=`<tr><td ${st(OR,1)}>Total Booking</td><td ${st(GR)}></td><td ${st(GR,1)}>${tot}</td><td ${st(GR,1)}>24</td><td ${st(GR,1)}>${inr(tot/24)}</td><td ${st(GR)}>${inr(totAmt/24)}</td><td ${st(GR,1)}>100.00%</td></tr>`;
+ $("t1").innerHTML=h1;
+ let h2=`<tr><th>Hour</th><th class="n">Booking</th><th class="n">Share %</th></tr>`;
+ for(let h=0;h<24;h++)h2+=`<tr><td>${hl(h)}</td><td class="n">${hours[h]}</td><td class="n">${inr(tot?hours[h]*100/tot:0)}%</td></tr>`;
+ $("t2").innerHTML=h2;
+ $("out").classList.remove("hide");
+ msg.textContent=`Counted ${tot} bookings. Ignored ${skipStatus} rows (other status)`+(dup?`, ${dup} repeat rows of same Booking ID`:"")+(skipTime?`, ${skipTime} rows with unreadable Booked On time`:"")+(iT<0?". 'Total' column not found, amounts shown as 0.":".");
+}
+
+function cp(id,btn,plain){
+ const t=$(id),rows=[...t.rows].map(r=>[...r.cells].map(c=>c.textContent));
+ const tsv=rows.map(r=>r.join("\t")).join("\n");
+ const done=()=>{const o=btn.textContent;btn.textContent="Copied ✓";setTimeout(()=>btn.textContent=o,1500)};
+ const fb=()=>{const g=document.createRange();g.selectNode(t);const s=getSelection();s.removeAllRanges();s.addRange(g);document.execCommand("copy");s.removeAllRanges();done()};
+ try{
+  if(plain){navigator.clipboard.writeText(tsv).then(done,fb)}
+  else{
+   const html="<table cellspacing='0' style='border-collapse:collapse'>"+t.innerHTML+"</table>";
+   navigator.clipboard.write([new ClipboardItem({"text/html":new Blob([html],{type:"text/html"}),"text/plain":new Blob([tsv],{type:"text/plain"})})]).then(done,fb);
+  }
+ }catch(e){fb()}
+}
+
+const d=$("drop"),f=$("f");
+d.onclick=()=>f.click();
+d.ondragover=e=>{e.preventDefault();d.classList.add("on")};
+d.ondragleave=()=>d.classList.remove("on");
+d.ondrop=e=>{e.preventDefault();d.classList.remove("on");if(e.dataTransfer.files[0])load(e.dataTransfer.files[0])};
+f.onchange=()=>{if(f.files[0])load(f.files[0])};
+function load(file){const r=new FileReader();r.onload=()=>run(r.result);r.readAsText(file)}
+</script>
+</body>
+</html>
